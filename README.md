@@ -15,7 +15,12 @@ python -m venv .venv
 pip install -e .
 ```
 
-> 每次打开新终端都需要先激活：`.venv\Scripts\Activate.ps1`
+> **VSCode 用户（推荐）：** 按 `Ctrl+Shift+P` → 输入 `Python: Select Interpreter` → 选 `.venv\Scripts\python.exe`。设置一次后，VSCode 每次打开终端会自动激活虚拟环境，无需手动输命令。
+>
+> **手动激活：**
+> - VSCode / PowerShell 终端：`.venv\Scripts\Activate.ps1`
+> - CMD 终端：`.venv\Scripts\activate.bat`
+> - Git Bash 终端：`source .venv/Scripts/activate`
 
 **初始化（首次使用执行一次）**
 
