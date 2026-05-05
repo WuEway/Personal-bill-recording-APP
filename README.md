@@ -36,8 +36,6 @@ mz init
 mz formats
 ```
 
-列出所有已注册的账单格式（来源名称、支持的文件扩展名、加密提示等），导入前可先确认格式是否受支持。
-
 ---
 
 ## 日常使用流程
@@ -46,7 +44,11 @@ mz formats
 
 ```
 mz import <文件路径>
+mz import <文件路径> --account 8223      # 手动指定银行卡号后四位
+mz import <文件路径> --password <密码>   # 加密 PDF（工行默认：身份证后六位）
 ```
+
+如果文件已导入过，加 `--account` 只会更新卡号标签，不重复入库。
 
 支持的格式：
 
@@ -55,7 +57,7 @@ mz import <文件路径>
 | 微信支付 | `.xlsx` | 微信 → 我 → 服务 → 钱包 → 账单 → 常见问题 → 下载账单 |
 | 支付宝 | `.csv` | 支付宝 → 我的 → 账单 → 下载账单 |
 | 平安银行 | `.pdf` | 网银/手机银行导出流水 |
-| 工商银行 | `.pdf` | 网银导出，加密密码为**身份证后 6 位** |
+| 工商银行 | `.pdf` | 网银导出，加密密码为身份证后 6 位 |
 
 ### 2. 去重
 
@@ -81,19 +83,30 @@ mz report --month 2026-04
 mz list files
 ```
 
-列出所有已导入账单文件。别名格式为 `来源_卡号后四位`（纯英文+数字），如 `pingan_8223`、`icbc_6930`、`wechat`、`alipay`。银行账单会自动尝试从 PDF 提取卡号后四位；如未识别到，别名为 `pingan_1`、`pingan_2` 等。
+列出所有已导入账单文件，显示 ID、别名、来源、账单周期、条数和文件名。
+别名格式：`来源_卡号后四位`（纯英文+数字），如 `pingan_8223`、`icbc_6930`、`wechat`、`alipay`。
+银行 PDF 会自动尝试从首页文本提取卡号后四位；识别失败时别名为 `pingan_1`、`pingan_2`。
+
+---
+
+## 查看原始账单记录
 
 ```
-mz import <文件> --account 8223
+mz list raw --month 2026-04                        # 查看所有来源的原始记录
+mz list raw --source wechat --month 2026-04        # 按来源过滤
+mz list raw --source bank_pingan --month 2026-04   # 只看平安银行记录
+mz list raw --file pingan_8223 --month 2026-04     # 按别名过滤（见 mz list files）
+mz list raw --file 3 --month 2026-04               # 按文件 ID 过滤
+mz list raw --file pingan_8223 --month 2026-04 --transfers  # 同时显示内部转账记录
 ```
 
-导入时手动指定卡号后四位。如果该文件已导入过，只更新卡号标签，不重复入库。适用于 PDF 未能自动识别卡号的情况。
+`--file` 优先于 `--source`。默认不显示已标记为内部转账的记录，加 `--transfers` 显示全部。
 
 ```
-mz list raw --file <ID 或别名>
+mz list shadows --month 2026-04
 ```
 
-按文件查看原始记录，接受数字 ID（`--file 3`）或别名（`--file pingan_8223`）。`--file` 优先于 `--source`。
+查看银行流水中含"财付通"/"支付宝"标记、但未能与 App 账单配对的记录（排查去重遗漏）。
 
 ---
 
@@ -102,9 +115,12 @@ mz list raw --file <ID 或别名>
 默认所有支出计入总支出，所有收入不计入。
 
 ```
-mz list expense --month 2026-04   # 查看支出，找到交易 ID
+mz list expense --month 2026-04   # 查看支出明细，找到交易 ID
+mz list income  --month 2026-04   # 查看收入明细
+mz list group   --month 2026-04   # 查看群收款
 
-mz exclude <ID>                   # 排除（不计入支出）
+mz exclude <ID>                   # 排除某笔（不计入总支出）
+mz include <ID>                   # 强制计入
 mz offset <ID>                    # 让一笔收入抵充总支出（如收回的群分摊）
 mz reset-inclusion <ID>           # 恢复自动模式
 ```
@@ -114,12 +130,23 @@ mz reset-inclusion <ID>           # 恢复自动模式
 ## 重点类目跟踪
 
 ```
-mz category budget 旅游 --monthly 3000      # 设月预算
+mz category list                               # 查看所有类目及进度
+mz category budget 旅游 --monthly 3000         # 设月预算（元）
+mz category budget 旅游 --yearly 10000         # 设年预算（元）
 
-mz entry add 旅游 1200 "机票" --date 2026-04-15           # 手动记录
-mz entry add 旅游 1200 "机票" --date 2026-04-15 --link <ID>  # 关联已有交易
+mz entry add 旅游 1200 "机票" --date 2026-04-15           # 手动记录一笔
+mz entry add 旅游 1200 "机票" --date 2026-04-15 --link <交易ID>  # 关联已有交易
+```
 
-mz category list                            # 查看所有类目进度
+---
+
+## 其他命令
+
+```
+mz coverage                  # 查看待补账单建议（哪些银行卡账单未导入）
+mz explain <交易ID>           # 查看某笔交易的去重详情
+mz db stats                  # 数据库记录数统计
+mz formats                   # 支持的账单格式及导出方式说明
 ```
 
 ---
@@ -138,19 +165,25 @@ npx expo start    # 扫码用 Expo Go 打开
 
 ## 常用命令速查
 
-| 命令 | 用途 |
-|---|---|
-| `mz import <文件> [--account XXXX]` | 导入账单；`--account` 指定卡号后四位 |
-| `mz formats` | 查看支持的导入格式 |
-| `mz dedupe --month YYYY-MM` | 跨平台去重 |
-| `mz report --month YYYY-MM` | 月度报告 |
-| `mz list files` | 查看已导入账单文件列表 |
-| `mz list expense --month YYYY-MM` | 支出明细 |
-| `mz list income --month YYYY-MM` | 收入明细 |
-| `mz list raw [--source X] [--file N]` | 原始账单记录（可按来源或文件编号过滤） |
-| `mz list shadows` | 查看未匹配的银行影子记录 |
-| `mz exclude <ID>` | 排除某笔 |
-| `mz offset <ID>` | 收入抵充支出 |
-| `mz coverage` | 待补账单建议 |
-| `mz category list` | 类目进度 |
-| `mz db stats` | 数据库统计 |
+| 命令 | 关键选项 | 用途 |
+|---|---|---|
+| `mz import <文件>` | `--account XXXX` `--password <密码>` | 导入账单 |
+| `mz formats` | — | 查看支持的格式及导出说明 |
+| `mz dedupe` | `--month YYYY-MM` | 跨平台去重（必须指定月份） |
+| `mz report` | `--month YYYY-MM` `--format table/json/md` | 月度报告 |
+| `mz list files` | — | 已导入账单文件列表（含 ID 和别名） |
+| `mz list expense` | `--month YYYY-MM` | 支出明细 |
+| `mz list income` | `--month YYYY-MM` | 收入明细 |
+| `mz list group` | `--month YYYY-MM` | 群收款明细 |
+| `mz list raw` | `--source X` `--file <ID或别名>` `--month YYYY-MM` `--transfers` | 原始账单记录 |
+| `mz list shadows` | `--month YYYY-MM` | 未匹配的银行影子记录 |
+| `mz exclude <ID>` | — | 排除某笔交易 |
+| `mz include <ID>` | — | 强制计入某笔 |
+| `mz offset <ID>` | — | 收入抵充支出 |
+| `mz reset-inclusion <ID>` | — | 恢复自动模式 |
+| `mz coverage` | — | 待补账单建议 |
+| `mz category list` | — | 类目进度 |
+| `mz category budget <名称>` | `--monthly N` `--yearly N` | 设预算 |
+| `mz entry add <类目> <金额> <说明>` | `--date YYYY-MM-DD` `--link <ID>` | 手动记录类目支出 |
+| `mz explain <ID>` | — | 查看去重详情 |
+| `mz db stats` | — | 数据库统计 |
