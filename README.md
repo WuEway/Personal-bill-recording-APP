@@ -84,10 +84,10 @@ mz list files
 列出所有已导入账单文件，显示编号、来源、账单周期、条数和文件名。同一来源导入多个文件时别名自动加序号（如 `bank_pingan_1`、`bank_pingan_2`）。
 
 ```
-mz list raw --file <编号>
+mz list raw --file <ID 或别名>
 ```
 
-按文件编号查看该账单文件的原始记录，适合在同一来源有多份账单时精确定位某一份。`--file` 和 `--source` 同时指定时 `--file` 优先。
+按文件查看原始记录。`--file` 接受数字 ID（如 `--file 3`）或别名（如 `--file bank_pingan`）。同一来源有多份账单时别名自动加序号（如 `bank_pingan_1`）。`--file` 和 `--source` 同时指定时 `--file` 优先。
 
 ---
 

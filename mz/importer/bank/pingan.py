@@ -12,19 +12,29 @@ from mz.utils.text import collapse_chinese_repeats
 WATERMARK_CHARS = set("BAP")
 DATE_FMTS = ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d", "%Y年%m月%d日")
 
+# Keyword sets for each logical column — matched against the header row.
+# Pingan PDF header: 序号No. | 交易日期Date | 交易金额Transaction Amount |
+#                   余额Balance | 交易地点Trading Place | 摘要Remark |
+#                   备注Notes | *交易对手信息*Counterparty Information
+COLUMN_KEYWORDS: dict[str, list[str]] = {
+    "date":         ["交易日期", "Date"],
+    "amount":       ["交易金额", "Transaction Amount", "金额"],
+    "balance":      ["余额", "Balance"],
+    "location":     ["交易地点", "Trading Place"],
+    "remark":       ["摘要", "Remark"],
+    "notes":        ["备注", "Notes"],
+    "counterparty": ["交易对手", "Counterparty"],
+}
+
 
 def _clean_cell(cell: str | None) -> str | None:
     if cell is None:
         return None
     cell = cell.strip()
-    # Entire cell is watermark-only (≤3 chars, all in BAP + whitespace)
     if len(cell) <= 3 and all(c in WATERMARK_CHARS or c.isspace() for c in cell):
         return ""
-    # Remove isolated watermark letters (B/A/P) that appear as PDF overlay
-    # artifacts. They are always single letters surrounded by whitespace or
-    # at line boundaries — safe to strip without touching legitimate content.
+    # Remove isolated watermark letters (B/A/P) — PDF overlay artifacts
     cell = re.sub(r"(?<![A-Za-z一-鿿])[BAP](?![A-Za-z一-鿿])", "", cell)
-    # Collapse multiple spaces/newlines left by the removal above
     cell = re.sub(r"[ \t\n\r]+", " ", cell).strip()
     cell = collapse_chinese_repeats(cell)
     return cell
@@ -49,7 +59,6 @@ def _parse_date(s: str) -> datetime | None:
             return datetime.strptime(s, fmt)
         except ValueError:
             continue
-    # try partial datetime like "2026-04-01 12:00:00"
     m = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", s)
     if m:
         ds = m.group(1).replace("/", "-")
@@ -70,7 +79,6 @@ class PinganPdfImporter(BaseImporter):
             return False
         try:
             import pdfplumber
-
             with pdfplumber.open(file_path) as pdf:
                 if not pdf.pages:
                     return False
@@ -81,7 +89,6 @@ class PinganPdfImporter(BaseImporter):
 
     def parse(self, file_path: Path, file_format: str) -> Iterator[RawTransactionDraft]:
         import pdfplumber
-
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables(
@@ -102,90 +109,83 @@ class PinganPdfImporter(BaseImporter):
             return today, today
         return min(dates), max(dates)
 
+    # ── Table parsing ─────────────────────────────────────────────────────────
+
+    def _build_col_map(self, header_cells: list[str | None]) -> dict[str, int]:
+        """
+        Match each logical column name to its index using keyword lookup against
+        the header row.  Returns an empty dict if no recognised columns are found.
+        """
+        col_map: dict[str, int] = {}
+        for field, keywords in COLUMN_KEYWORDS.items():
+            for idx, cell in enumerate(header_cells):
+                if cell and any(kw in cell for kw in keywords):
+                    col_map[field] = idx
+                    break
+        return col_map
+
     def _parse_table(self, table: list[list]) -> Iterator[RawTransactionDraft]:
         if not table:
             return
+        col_map: dict[str, int] = {}
         header_found = False
+
         for raw_row in table:
             cells = [_clean_cell(str(c) if c is not None else None) for c in raw_row]
-            # detect header row
+
             if not header_found:
                 row_text = " ".join(c or "" for c in cells)
+                # Detect header row by presence of key Chinese column labels
                 if "交易日期" in row_text or "交易金额" in row_text:
+                    col_map = self._build_col_map(cells)
                     header_found = True
-                continue
+                continue  # always skip header row itself
+
             if not any(c for c in cells):
                 continue
-            draft = self._parse_data_row(cells)
+
+            draft = self._parse_data_row(cells, col_map)
             if draft:
                 yield draft
 
-    def _parse_data_row(self, cells: list[str | None]) -> RawTransactionDraft | None:
+    def _parse_data_row(
+        self,
+        cells: list[str | None],
+        col_map: dict[str, int],
+    ) -> RawTransactionDraft | None:
+        """
+        Extract a transaction from one data row using the column map built from
+        the header.  Falls back to a lightweight heuristic scan if the column
+        map is incomplete (e.g., pdfplumber merged a header across pages).
+        """
         try:
-            # Column order: 序号No. | 交易日期Date | 交易金额 | 余额 | 交易地点 | 摘要 | 备注 | 交易对手信息
-            # The serial number (1, 2, 3…) has no sign and no decimal point.
-            # Transaction amounts always carry an explicit +/- sign: +1893.92, -60.0.
-            # Balance has no sign but has a decimal point.
-            # We locate columns by scanning position-aware so the serial number
-            # is never mistaken for an amount.
+            def get(field: str) -> str | None:
+                idx = col_map.get(field)
+                if idx is None or idx >= len(cells):
+                    return None
+                return cells[idx] or None
 
-            non_empty = [c for c in cells if c]
-            if len(non_empty) < 3:
+            date_str   = get("date")
+            amount_str = get("amount")
+            remark     = get("remark")
+            notes      = get("notes")
+            cpty_raw   = get("counterparty")
+
+            # Fallback: if col_map didn't resolve date/amount, use heuristics
+            if not date_str:
+                for c in cells:
+                    if c and re.match(r"\d{4}[-/]\d{2}[-/]\d{2}", c):
+                        date_str = c
+                        break
+            if not amount_str:
+                # Look for a cell with explicit +/- sign (avoids serial numbers)
+                for c in cells:
+                    if c and re.match(r"^[+\-]\d[\d,]*\.?\d*$", c.replace(" ", "")):
+                        amount_str = c
+                        break
+
+            if not date_str or not amount_str:
                 return None
-
-            # Step 1: find date column index
-            date_str = None
-            date_idx = -1
-            for i, cell in enumerate(cells):
-                if cell and re.match(r"\d{4}[-/]\d{2}[-/]\d{2}", cell):
-                    date_str = cell
-                    date_idx = i
-                    break
-
-            if date_str is None or date_idx < 0:
-                return None
-
-            # Step 2: after the date, find first cell with explicit +/- sign = amount
-            amount_str = None
-            amount_idx = -1
-            for i in range(date_idx + 1, len(cells)):
-                cell = cells[i]
-                if cell and re.match(r"^[+\-]\d[\d,]*\.?\d*$", cell.replace(" ", "")):
-                    amount_str = cell
-                    amount_idx = i
-                    break
-
-            if amount_str is None:
-                return None
-
-            # Step 3: skip the next numeric cell (balance), then collect text cells in order
-            # [交易地点, 摘要, 备注, 交易对手信息]
-            text_cells: list[str] = []
-            skip_next_numeric = True
-            for i in range(amount_idx + 1, len(cells)):
-                cell = cells[i]
-                if not cell:
-                    continue
-                if skip_next_numeric and re.match(r"^\d[\d,]*\.?\d*$", cell.replace(" ", "")):
-                    skip_next_numeric = False
-                    continue
-                skip_next_numeric = False
-                text_cells.append(cell)
-
-            # Map positional text cells to semantic columns
-            location = text_cells[0] if len(text_cells) > 0 else None
-            remark = text_cells[1] if len(text_cells) > 1 else None
-            notes = text_cells[2] if len(text_cells) > 2 else None
-            counterparty_raw = text_cells[3] if len(text_cells) > 3 else None
-
-            # Extract account name from counterparty "公司名-账户名-账号" format
-            counterparty = None
-            if counterparty_raw:
-                parts = counterparty_raw.split("-")
-                if len(parts) >= 2:
-                    counterparty = parts[1].strip() or counterparty_raw
-                else:
-                    counterparty = counterparty_raw
 
             txn_time = _parse_date(date_str)
             if txn_time is None:
@@ -198,12 +198,16 @@ class PinganPdfImporter(BaseImporter):
             direction = "income" if amount > 0 else "expense"
             amount_cents = int(round(amount * 100))
 
-            # Shadow detection: 财付通 appears in 备注 (notes); 支付宝 may appear in remark/notes
-            notes_text = notes or ""
-            remark_text = remark or ""
-            is_shadow_wechat = "财付通" in notes_text or "微信" in notes_text
-            is_shadow_alipay = "支付宝" in notes_text or "蚂蚁" in notes_text or \
-                               "支付宝" in remark_text or "蚂蚁" in remark_text
+            # Extract account name from "公司名-账户名-账号" counterparty format
+            counterparty: str | None = None
+            if cpty_raw:
+                parts = cpty_raw.split("-")
+                counterparty = (parts[1].strip() if len(parts) >= 2 else cpty_raw) or None
+
+            # Shadow detection (财付通/支付宝 appears in 备注 or 摘要)
+            shadow_text = f"{notes or ''} {remark or ''}"
+            is_shadow_wechat = "财付通" in shadow_text or "微信" in shadow_text
+            is_shadow_alipay = "支付宝" in shadow_text or "蚂蚁" in shadow_text
 
             payment_raw = (
                 "__SHADOW_WECHAT__" if is_shadow_wechat
@@ -211,21 +215,19 @@ class PinganPdfImporter(BaseImporter):
                 else None
             )
 
-            description = remark or location
-
             return RawTransactionDraft(
                 source="bank_pingan",
                 txn_time=txn_time,
                 amount_cents=amount_cents,
                 counterparty=counterparty,
-                description=description,
+                description=notes or remark,
                 payment_method_raw=payment_raw,
                 txn_type_raw=remark,
                 direction=direction,
                 external_txn_id=None,
                 external_merchant_id=None,
                 is_group_payment=False,
-                raw_json={"cells": cells},
+                raw_json={"cells": cells, "col_map": col_map},
             )
         except Exception:
             return None

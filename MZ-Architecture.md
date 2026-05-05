@@ -154,6 +154,40 @@ App 必须在导入界面明确列出"支持的格式"清单，并对每种格�
 3. **可解释**：每条去重决策留 `match_reason`，CLI 可 `mz explain <id>`
 4. **可逆**：用户可撤销 include/exclude / 类目分配；可全量重跑
 5. **离线运行**：MVP 不依赖任何在线服务
+6. **文档同步**：用户可见命令变更须同步更新 README；架构设计变更须同步更新本文档
+
+### 3.3 导入管道设计原则（Import Pipeline）
+
+所有账单格式（xlsx / csv / pdf）的导入遵循三步模型：
+
+```
+原始文件
+  │
+  ▼ Step 1 — 格式化提取
+  │  PDF / XLSX / CSV → 二维字符串表格（行 × 列）
+  │  - PDF：pdfplumber 提取表格，去除水印字符（B/A/P 孤立字母）
+  │  - XLSX：openpyxl 按行读取
+  │  - CSV：标准库 csv，自动检测 UTF-8 / GBK
+  │
+  ▼ Step 2 — 语义列识别（Header-Driven）
+  │  扫描表头行，按关键字将列名映射到逻辑字段：
+  │    交易日期 / Date       → txn_time
+  │    交易金额 / Amount     → amount_cents（带 +/- 号，正=收入，负=支出）
+  │    余额 / Balance        → 跳过（仅用于校验，不存储）
+  │    摘要 / Remark         → txn_type_raw
+  │    备注 / Notes          → description（财付通/支付宝检测在此列）
+  │    交易对手 / Counterparty → counterparty（截取账户名部分）
+  │  此方案不依赖列顺序，表头关键字匹配失败时降级为符号特征推断。
+  │
+  ▼ Step 3 — 规范化为 RawTransactionDraft
+     统一字段：source / txn_time / amount_cents / direction /
+              counterparty / description / payment_method_raw /
+              txn_type_raw / external_txn_id / is_group_payment
+     存入 raw_transactions 表，作为去重引擎的输入。
+```
+
+**为什么不用位置推断（positional heuristics）：**
+不同银行 PDF 的列顺序可能随版本变化；平安银行 PDF 含序号列在日期之前，位置推断曾将序号（1/2/3）误识别为金额。Header-driven 方案只要表头关键字不变，列顺序无关。
 
 ### 3.3 安全与隐私
 
