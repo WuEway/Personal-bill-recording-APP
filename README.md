@@ -30,6 +30,14 @@ mz init
 
 按提示输入姓名，选择要跟踪的重点类目。
 
+**查看支持的导入格式**
+
+```
+mz formats
+```
+
+列出所有已注册的账单格式（来源名称、支持的文件扩展名、加密提示等），导入前可先确认格式是否受支持。
+
 ---
 
 ## 日常使用流程
@@ -64,6 +72,22 @@ mz report --month 2026-04
 ```
 
 报告中若有"⚠️ 待补账单"提示，说明某银行卡在已导入账单中出现但流水未导入，按提示补上后重新去重。
+
+---
+
+## 导入文件管理
+
+```
+mz list files
+```
+
+列出所有已导入账单文件，显示编号、来源、账单周期、条数和文件名。同一来源导入多个文件时别名自动加序号（如 `bank_pingan_1`、`bank_pingan_2`）。
+
+```
+mz list raw --file <编号>
+```
+
+按文件编号查看该账单文件的原始记录，适合在同一来源有多份账单时精确定位某一份。`--file` 和 `--source` 同时指定时 `--file` 优先。
 
 ---
 
@@ -111,10 +135,14 @@ npx expo start    # 扫码用 Expo Go 打开
 | 命令 | 用途 |
 |---|---|
 | `mz import <文件>` | 导入账单 |
+| `mz formats` | 查看支持的导入格式 |
 | `mz dedupe --month YYYY-MM` | 跨平台去重 |
 | `mz report --month YYYY-MM` | 月度报告 |
+| `mz list files` | 查看已导入账单文件列表 |
 | `mz list expense --month YYYY-MM` | 支出明细 |
 | `mz list income --month YYYY-MM` | 收入明细 |
+| `mz list raw [--source X] [--file N]` | 原始账单记录（可按来源或文件编号过滤） |
+| `mz list shadows` | 查看未匹配的银行影子记录 |
 | `mz exclude <ID>` | 排除某笔 |
 | `mz offset <ID>` | 收入抵充支出 |
 | `mz coverage` | 待补账单建议 |

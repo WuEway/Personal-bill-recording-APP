@@ -122,36 +122,70 @@ class PinganPdfImporter(BaseImporter):
 
     def _parse_data_row(self, cells: list[str | None]) -> RawTransactionDraft | None:
         try:
-            # Typical columns: 序号, 交易日期, 交易金额, 余额, 交易地点, 摘要, 备注, 交易对手信息
-            # Filter out empty strings to find real data
+            # Column order: 序号No. | 交易日期Date | 交易金额 | 余额 | 交易地点 | 摘要 | 备注 | 交易对手信息
+            # The serial number (1, 2, 3…) has no sign and no decimal point.
+            # Transaction amounts always carry an explicit +/- sign: +1893.92, -60.0.
+            # Balance has no sign but has a decimal point.
+            # We locate columns by scanning position-aware so the serial number
+            # is never mistaken for an amount.
+
             non_empty = [c for c in cells if c]
             if len(non_empty) < 3:
                 return None
 
-            # Try to identify date column
+            # Step 1: find date column index
             date_str = None
-            amount_str = None
-            remark = None
-            counterparty = None
-
+            date_idx = -1
             for i, cell in enumerate(cells):
+                if cell and re.match(r"\d{4}[-/]\d{2}[-/]\d{2}", cell):
+                    date_str = cell
+                    date_idx = i
+                    break
+
+            if date_str is None or date_idx < 0:
+                return None
+
+            # Step 2: after the date, find first cell with explicit +/- sign = amount
+            amount_str = None
+            amount_idx = -1
+            for i in range(date_idx + 1, len(cells)):
+                cell = cells[i]
+                if cell and re.match(r"^[+\-]\d[\d,]*\.?\d*$", cell.replace(" ", "")):
+                    amount_str = cell
+                    amount_idx = i
+                    break
+
+            if amount_str is None:
+                return None
+
+            # Step 3: skip the next numeric cell (balance), then collect text cells in order
+            # [交易地点, 摘要, 备注, 交易对手信息]
+            text_cells: list[str] = []
+            skip_next_numeric = True
+            for i in range(amount_idx + 1, len(cells)):
+                cell = cells[i]
                 if not cell:
                     continue
-                # Date column
-                if re.match(r"\d{4}[-/]\d{2}[-/]\d{2}", cell) and date_str is None:
-                    date_str = cell
-                # Amount column (has +/- prefix or is numeric)
-                elif re.match(r"^[+\-]?\d[\d,]*\.?\d*$", cell.replace(" ", "")) and amount_str is None:
-                    amount_str = cell
-                # Remark / counterparty
-                elif len(cell) > 1 and not re.match(r"^\d+$", cell):
-                    if remark is None and i >= 4:
-                        remark = cell
-                    elif counterparty is None and i >= 6:
-                        counterparty = cell
+                if skip_next_numeric and re.match(r"^\d[\d,]*\.?\d*$", cell.replace(" ", "")):
+                    skip_next_numeric = False
+                    continue
+                skip_next_numeric = False
+                text_cells.append(cell)
 
-            if not date_str or not amount_str:
-                return None
+            # Map positional text cells to semantic columns
+            location = text_cells[0] if len(text_cells) > 0 else None
+            remark = text_cells[1] if len(text_cells) > 1 else None
+            notes = text_cells[2] if len(text_cells) > 2 else None
+            counterparty_raw = text_cells[3] if len(text_cells) > 3 else None
+
+            # Extract account name from counterparty "公司名-账户名-账号" format
+            counterparty = None
+            if counterparty_raw:
+                parts = counterparty_raw.split("-")
+                if len(parts) >= 2:
+                    counterparty = parts[1].strip() or counterparty_raw
+                else:
+                    counterparty = counterparty_raw
 
             txn_time = _parse_date(date_str)
             if txn_time is None:
@@ -164,16 +198,12 @@ class PinganPdfImporter(BaseImporter):
             direction = "income" if amount > 0 else "expense"
             amount_cents = int(round(amount * 100))
 
-            text = f"{remark or ''} {counterparty or ''}"
-            is_shadow_wechat = "财付通" in text or "微信" in text
-            is_shadow_alipay = "支付宝" in text or "蚂蚁" in text
-
-            # 财付通/支付宝 bank entries are outgoing payments (WeChat/Alipay debits),
-            # even when the PDF shows the amount as positive. Force expense direction
-            # so the dedup engine can match them against app records.
-            if (is_shadow_wechat or is_shadow_alipay) and direction == "income":
-                direction = "expense"
-                amount_cents = -abs(amount_cents)
+            # Shadow detection: 财付通 appears in 备注 (notes); 支付宝 may appear in remark/notes
+            notes_text = notes or ""
+            remark_text = remark or ""
+            is_shadow_wechat = "财付通" in notes_text or "微信" in notes_text
+            is_shadow_alipay = "支付宝" in notes_text or "蚂蚁" in notes_text or \
+                               "支付宝" in remark_text or "蚂蚁" in remark_text
 
             payment_raw = (
                 "__SHADOW_WECHAT__" if is_shadow_wechat
@@ -181,12 +211,14 @@ class PinganPdfImporter(BaseImporter):
                 else None
             )
 
+            description = remark or location
+
             return RawTransactionDraft(
                 source="bank_pingan",
                 txn_time=txn_time,
                 amount_cents=amount_cents,
                 counterparty=counterparty,
-                description=remark,
+                description=description,
                 payment_method_raw=payment_raw,
                 txn_type_raw=remark,
                 direction=direction,

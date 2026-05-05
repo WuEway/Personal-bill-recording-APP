@@ -139,18 +139,68 @@ def _show_group(month: str | None) -> None:
     conn.close()
 
 
+@cmd_list.command("files")
+def list_files():
+    """查看所有已导入账单文件（含编号/来源/时间段/条数）。"""
+    from mz.repositories.imported_file_repo import ImportedFileRepository
+    import os
+
+    conn = get_connection()
+    repo = ImportedFileRepository(conn)
+    files = repo.list_all()
+    conn.close()
+
+    if not files:
+        console.print("[dim]尚未导入任何账单文件[/dim]\n")
+        return
+
+    # Build short aliases: single file from source → source name; multiple → source_1, source_2
+    from collections import Counter
+    source_counts: Counter = Counter(f.source for f in files)
+    source_seen: Counter = Counter()
+
+    console.print("\n[bold]已导入账单文件[/bold]\n")
+    t = make_table("别名", "来源", "账单周期", "条数", "文件")
+    for f in files:
+        count = source_counts[f.source]
+        source_seen[f.source] += 1
+        if count == 1:
+            alias = f.source
+        else:
+            alias = f"{f.source}_{source_seen[f.source]}"
+
+        src_label = SOURCE_LABELS.get(f.source, f.source)
+
+        if f.period_start and f.period_end:
+            period = f"{f.period_start.strftime('%Y-%m-%d')} ~ {f.period_end.strftime('%Y-%m-%d')}"
+        else:
+            period = "—"
+
+        basename = os.path.basename(f.file_path)
+        if len(basename) > 35:
+            basename = basename[:32] + "..."
+
+        t.add_row(alias, src_label, period, str(f.row_count), basename)
+
+    console.print(t)
+    console.print(f"共 {len(files)} 个文件\n")
+
+
 @cmd_list.command("raw")
 @click.option("--source", "-s", default=None,
               help="来源过滤: wechat / alipay / bank_pingan / bank_icbc / …")
+@click.option("--file", "file_id", default=None, type=int,
+              help="按文件编号过滤（来自 mz list files 中的 ID）；指定时忽略 --source")
 @click.option("--month", "-m", default=None, help="月份 YYYY-MM（默认当月）")
 @click.option("--transfers", is_flag=True, default=False,
               help="同时显示已标记为内部转账的记录")
-def list_raw(source: str | None, month: str | None, transfers: bool):
+def list_raw(source: str | None, file_id: int | None, month: str | None, transfers: bool):
     """查看原始导入记录（用于核验原始账单数据）。
 
     \b
     示例：
       mz list raw --source wechat --month 2026-04
+      mz list raw --file 2 --month 2026-04
       mz list raw --source bank_pingan --month 2026-04 --transfers
       mz list raw --month 2026-04          # 所有来源
     """
@@ -162,11 +212,18 @@ def list_raw(source: str | None, month: str | None, transfers: bool):
     from mz.repositories.raw_txn_repo import RawTransactionRepository
     raw_repo = RawTransactionRepository(conn)
 
-    raws = raw_repo.list_in_period(start, end, source=source)
+    # --file takes priority over --source
+    if file_id is not None:
+        raws = raw_repo.list_in_period(start, end, source=None)
+        raws = [r for r in raws if getattr(r, "source_file_id", None) == file_id]
+        src_label = f"文件#{file_id}"
+    else:
+        raws = raw_repo.list_in_period(start, end, source=source)
+        src_label = SOURCE_LABELS.get(source, source) if source else "全部"
+
     if not transfers:
         raws = [r for r in raws if not r.is_internal_transfer]
 
-    src_label = SOURCE_LABELS.get(source, source) if source else "全部"
     console.print(f"\n[bold]{month} 原始账单 — {src_label}[/bold]\n")
 
     if not raws:
