@@ -89,6 +89,27 @@ class CoverageDetector:
 
         return sorted(result, key=lambda x: (x.priority == "high"), reverse=True)
 
+    # ── Shared SQL fragment ──────────────────────────────────────────────────
+    # A bank record is a TRUE orphan shadow only when ALL three hold:
+    #   1. Its description mentions 财付通/支付宝 (should have an App counterpart)
+    #   2. It has no dedup_link  (never matched to an App canonical)
+    #   3. It has no canonical transaction of its own (primary_raw_id)
+    #      — if it does, it is already counted as a standalone expense and
+    #        is NOT truly "lost" money; showing it as a warning is misleading.
+    _ORPHAN_SQL = """
+        SELECT r.id, r.txn_time, r.amount_cents, r.source,
+               r.counterparty, r.description
+        FROM raw_transactions r
+        LEFT JOIN dedup_links d    ON d.raw_txn_id    = r.id
+        LEFT JOIN transactions  t  ON t.primary_raw_id = r.id
+        WHERE r.source LIKE 'bank_%'
+          AND (r.counterparty LIKE ? OR r.description LIKE ?)
+          AND r.txn_time >= ? AND r.txn_time <= ?
+          AND d.id IS NULL   -- not a linked shadow
+          AND t.id IS NULL   -- not a standalone canonical primary (already counted)
+        ORDER BY r.txn_time
+    """
+
     def _list_orphan_shadows(
         self,
         app_source: str,
@@ -97,17 +118,7 @@ class CoverageDetector:
         end: date,
     ) -> list[dict]:
         rows = self.conn.execute(
-            """
-            SELECT r.id, r.txn_time, r.amount_cents, r.source,
-                   r.counterparty, r.description
-            FROM raw_transactions r
-            LEFT JOIN dedup_links d ON d.raw_txn_id = r.id
-            WHERE r.source LIKE 'bank_%'
-              AND (r.counterparty LIKE ? OR r.description LIKE ?)
-              AND r.txn_time >= ? AND r.txn_time <= ?
-              AND d.id IS NULL
-            ORDER BY r.txn_time
-            """,
+            self._ORPHAN_SQL,
             (f"%{keyword}%", f"%{keyword}%", start.isoformat(), end.isoformat() + "T23:59:59"),
         ).fetchall()
 
@@ -125,21 +136,11 @@ class CoverageDetector:
         return result
 
     def list_all_orphan_shadows(self, start: date, end: date) -> list[dict]:
-        """Return all unmatched bank shadow records for display."""
+        """Return truly orphan bank shadow records: unmatched AND not yet a standalone expense."""
         result = []
         for keyword in ("财付通", "支付宝"):
             rows = self.conn.execute(
-                """
-                SELECT r.id, r.txn_time, r.amount_cents, r.source,
-                       r.counterparty, r.description
-                FROM raw_transactions r
-                LEFT JOIN dedup_links d ON d.raw_txn_id = r.id
-                WHERE r.source LIKE 'bank_%'
-                  AND (r.counterparty LIKE ? OR r.description LIKE ?)
-                  AND r.txn_time >= ? AND r.txn_time <= ?
-                  AND d.id IS NULL
-                ORDER BY r.txn_time
-                """,
+                self._ORPHAN_SQL,
                 (f"%{keyword}%", f"%{keyword}%", start.isoformat(), end.isoformat() + "T23:59:59"),
             ).fetchall()
             for row in rows:
