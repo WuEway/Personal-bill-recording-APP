@@ -25,14 +25,9 @@ BASE_RULES: list[TransferRule] = [
         ),
         "cc_repayment",
     ),
-    TransferRule(
-        "meituan_yuefu_repay",
-        lambda t: (
-            t.counterparty == "美团"
-            and t.description and "美团月付" in t.description and "还款" in t.description
-        ),
-        "meituan_yuefu_repayment",
-    ),
+    # 美团月付还款：不识别为内部转账。
+    # 美团月付是先消费后还款的赊账服务，消费明细在美团平台，不在 WeChat/Alipay 账单里，
+    # 账单系统无法看到原始消费记录，因此还款本身就是本月真实支出，应该计入总支出。
     TransferRule(
         "huabei_repay",
         lambda t: (
