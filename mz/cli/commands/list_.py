@@ -8,6 +8,7 @@ from rich import box
 from mz.cli.context import get_connection
 from mz.cli.ui import fmt_amount, inclusion_badge, make_table
 from mz.services.inclusion import InclusionManager
+from mz.services.coverage import CoverageDetector
 from mz.utils.dates import current_month, month_range
 
 console = Console()
@@ -18,6 +19,9 @@ SOURCE_LABELS = {
     "bank_pingan": "平安",
     "bank_icbc": "工行",
     "bank_ccb": "建行",
+    "bank_boc": "中行",
+    "bank_abc": "农行",
+    "bank_cmb": "招行",
 }
 
 
@@ -133,3 +137,112 @@ def _show_group(month: str | None) -> None:
     console.print(t)
     console.print(f"共 {len(group_txns)} 条，默认全部不计入总支出\n")
     conn.close()
+
+
+@cmd_list.command("raw")
+@click.option("--source", "-s", default=None,
+              help="来源过滤: wechat / alipay / bank_pingan / bank_icbc / …")
+@click.option("--month", "-m", default=None, help="月份 YYYY-MM（默认当月）")
+@click.option("--transfers", is_flag=True, default=False,
+              help="同时显示已标记为内部转账的记录")
+def list_raw(source: str | None, month: str | None, transfers: bool):
+    """查看原始导入记录（用于核验原始账单数据）。
+
+    \b
+    示例：
+      mz list raw --source wechat --month 2026-04
+      mz list raw --source bank_pingan --month 2026-04 --transfers
+      mz list raw --month 2026-04          # 所有来源
+    """
+    if month is None:
+        month = current_month()
+    start, end = month_range(month)
+
+    conn = get_connection()
+    from mz.repositories.raw_txn_repo import RawTransactionRepository
+    raw_repo = RawTransactionRepository(conn)
+
+    raws = raw_repo.list_in_period(start, end, source=source)
+    if not transfers:
+        raws = [r for r in raws if not r.is_internal_transfer]
+
+    src_label = SOURCE_LABELS.get(source, source) if source else "全部"
+    console.print(f"\n[bold]{month} 原始账单 — {src_label}[/bold]\n")
+
+    if not raws:
+        console.print("[dim]无记录[/dim]\n")
+        conn.close()
+        return
+
+    # Check which raw IDs have been linked as shadows (deduplicated)
+    linked_ids: set[int] = set(
+        row[0] for row in conn.execute("SELECT raw_txn_id FROM dedup_links").fetchall()
+    )
+
+    t = make_table("raw_id", "时间", "金额", "方向", "对方", "说明", "来源", "状态")
+    for r in raws:
+        direction_label = {"expense": "支出", "income": "收入", "transfer": "转账"}.get(
+            r.direction, r.direction
+        )
+        src = SOURCE_LABELS.get(r.source, r.source)
+
+        if r.is_internal_transfer:
+            status = "[dim]内部转账[/dim]"
+        elif r.id in linked_ids:
+            status = "[cyan]已去重(影子)[/cyan]"
+        else:
+            status = "[green]主记录[/green]"
+
+        t.add_row(
+            str(r.id),
+            r.txn_time.strftime("%m-%d %H:%M"),
+            fmt_amount(r.amount_cents),
+            direction_label,
+            (r.counterparty or "")[:20],
+            (r.description or "")[:25],
+            src,
+            status,
+        )
+
+    console.print(t)
+    console.print(f"共 {len(raws)} 条原始记录\n")
+    conn.close()
+
+
+@cmd_list.command("shadows")
+@click.option("--month", "-m", default=None, help="月份 YYYY-MM（默认当月）")
+def list_shadows(month: str | None):
+    """查看未成功匹配的银行影子记录（银行流水中含"财付通"/"支付宝"但未去重的条目）。"""
+    if month is None:
+        month = current_month()
+    start, end = month_range(month)
+
+    conn = get_connection()
+    detector = CoverageDetector(conn)
+    orphans = detector.list_all_orphan_shadows(start, end)
+    conn.close()
+
+    console.print(f"\n[bold]{month} 未匹配银行影子记录[/bold]\n")
+
+    if not orphans:
+        console.print("[green]✓ 无遗漏，所有银行影子记录已匹配[/green]\n")
+        return
+
+    console.print(
+        '[dim]这些银行记录描述含"财付通"/"支付宝"，表明是微信/支付宝付款产生的扣款，'
+        '但未找到对应的 App 账单记录与之配对。\n'
+        '可能原因：App 账单时间段不覆盖该交易、金额有差异，或账单未导入。[/dim]\n'
+    )
+
+    t = make_table("raw_id", "日期", "金额", "银行来源", "描述")
+    for o in orphans:
+        t.add_row(
+            str(o["id"]),
+            o["date"],
+            fmt_amount(o["amount_cents"]),
+            SOURCE_LABELS.get(o["bank_source"], o["bank_source"]),
+            o["desc"][:50],
+        )
+
+    console.print(t)
+    console.print(f"共 {len(orphans)} 条未匹配记录\n")

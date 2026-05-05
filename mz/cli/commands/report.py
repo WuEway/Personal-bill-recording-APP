@@ -63,8 +63,15 @@ def _print_table(report, month: str) -> None:
             acc_label = (
                 f"{ma.institution}{'(' + ma.last_4 + ')' if ma.last_4 else ''}"
             )
-            ev = "; ".join(ma.evidence[:2])
-            lines.append(f"      • {acc_label} — {ev}")
+            is_orphan = ma.type.endswith("_orphan")
+            if is_orphan:
+                # Multi-line display for orphan shadow records
+                lines.append(f"      • {acc_label} 银行流水有未匹配影子记录：")
+                for ev_line in ma.evidence:
+                    lines.append(f"         {ev_line}")
+            else:
+                ev = "; ".join(ma.evidence[:2])
+                lines.append(f"      • {acc_label} — {ev}")
 
     content = "\n".join(lines)
     console.print(Panel(content, expand=False, border_style="cyan"))

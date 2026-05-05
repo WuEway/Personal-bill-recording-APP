@@ -17,9 +17,15 @@ def _clean_cell(cell: str | None) -> str | None:
     if cell is None:
         return None
     cell = cell.strip()
-    # Remove watermark-only cells (single B/A/P chars)
+    # Entire cell is watermark-only (≤3 chars, all in BAP + whitespace)
     if len(cell) <= 3 and all(c in WATERMARK_CHARS or c.isspace() for c in cell):
         return ""
+    # Remove isolated watermark letters (B/A/P) that appear as PDF overlay
+    # artifacts. They are always single letters surrounded by whitespace or
+    # at line boundaries — safe to strip without touching legitimate content.
+    cell = re.sub(r"(?<![A-Za-z一-鿿])[BAP](?![A-Za-z一-鿿])", "", cell)
+    # Collapse multiple spaces/newlines left by the removal above
+    cell = re.sub(r"[ \t\n\r]+", " ", cell).strip()
     cell = collapse_chinese_repeats(cell)
     return cell
 
@@ -159,8 +165,15 @@ class PinganPdfImporter(BaseImporter):
             amount_cents = int(round(amount * 100))
 
             text = f"{remark or ''} {counterparty or ''}"
-            is_shadow_wechat = "财付通" in text
+            is_shadow_wechat = "财付通" in text or "微信" in text
             is_shadow_alipay = "支付宝" in text or "蚂蚁" in text
+
+            # 财付通/支付宝 bank entries are outgoing payments (WeChat/Alipay debits),
+            # even when the PDF shows the amount as positive. Force expense direction
+            # so the dedup engine can match them against app records.
+            if (is_shadow_wechat or is_shadow_alipay) and direction == "income":
+                direction = "expense"
+                amount_cents = -abs(amount_cents)
 
             payment_raw = (
                 "__SHADOW_WECHAT__" if is_shadow_wechat

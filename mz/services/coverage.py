@@ -5,8 +5,10 @@ from datetime import date
 
 from mz.models.report import MissingAccount
 from mz.repositories.account_repo import AccountRepository
-from mz.repositories.imported_file_repo import ImportedFileRepository
 from mz.repositories.raw_txn_repo import RawTransactionRepository
+from mz.services.dedupe.matcher import INSTITUTION_TO_BANK_SOURCE
+
+BANK_SOURCE_TO_INSTITUTION: dict[str, str] = {v: k for k, v in INSTITUTION_TO_BANK_SOURCE.items()}
 
 
 class CoverageDetector:
@@ -14,78 +16,139 @@ class CoverageDetector:
         self.conn = conn
         self.raw_repo = RawTransactionRepository(conn)
         self.acc_repo = AccountRepository(conn)
-        self.file_repo = ImportedFileRepository(conn)
 
     def detect(self, period_start: date, period_end: date) -> list[MissingAccount]:
-        # 1. Accounts referenced in raw transactions (bank cards used via app payments)
+        all_raws = self.raw_repo.list_in_period(period_start, period_end)
+
+        # 1. Bank-card accounts referenced in app (WeChat/Alipay) transactions
         referenced: dict[tuple[str, str, str], list[str]] = {}
-        for raw in self.raw_repo.list_in_period(period_start, period_end):
+        for raw in all_raws:
             if raw.payment_account_id:
                 acc = self.acc_repo.get_by_id(raw.payment_account_id)
                 if acc and acc.type in ("bank_debit", "bank_credit") and acc.last_4:
                     key = (acc.institution or "", acc.last_4, acc.type)
                     referenced.setdefault(key, []).append(raw.source)
 
-        # 2. Accounts already covered by imported files
-        covered: set[tuple[str, str, str]] = set()
-        for raw in self.raw_repo.list_in_period(period_start, period_end):
-            if raw.source.startswith("bank_") and raw.payment_account_id:
-                acc = self.acc_repo.get_by_id(raw.payment_account_id)
-                if acc and acc.last_4:
-                    covered.add((acc.institution or "", acc.last_4, acc.type))
+        # 2. Institutions covered = any bank source has records in the period.
+        #    We use source name → institution mapping (bank_pingan → 平安银行, etc.).
+        #    This correctly handles the case where bank records don't carry their own
+        #    account number in payment_account_id.
+        covered_institutions: set[str] = set()
+        for raw in all_raws:
+            if raw.source.startswith("bank_"):
+                inst = BANK_SOURCE_TO_INSTITUTION.get(raw.source)
+                if inst:
+                    covered_institutions.add(inst)
 
-        # 3. Missing = referenced but not covered
+        # 3. Missing = referenced institution has no imported bank file
         result: list[MissingAccount] = []
-        for key, sources in referenced.items():
-            if key not in covered:
-                inst, last_4, acc_type = key
-                evidence = [f"{src} 账单中出现 {len(sources)} 次" for src in set(sources)]
-                result.append(
-                    MissingAccount(
-                        institution=inst,
-                        last_4=last_4,
-                        type=acc_type,
-                        evidence=evidence,
-                        priority="high" if len(sources) >= 5 else "medium",
-                    )
+        seen_institutions: set[str] = set()
+        for (inst, last_4, acc_type), sources in referenced.items():
+            if inst in covered_institutions:
+                continue
+            if inst in seen_institutions:
+                continue
+            seen_institutions.add(inst)
+            source_counts: dict[str, int] = {}
+            for s in sources:
+                source_counts[s] = source_counts.get(s, 0) + 1
+            evidence = [f"{src} 账单中出现 {cnt} 次" for src, cnt in source_counts.items()]
+            result.append(
+                MissingAccount(
+                    institution=inst,
+                    last_4=last_4,
+                    type=acc_type,
+                    evidence=evidence,
+                    priority="high" if sum(source_counts.values()) >= 5 else "medium",
                 )
+            )
 
-        # 4. Check for high orphan shadow rate
-        for app_source in ("wechat", "alipay"):
-            orphan_pct = self._orphan_shadow_pct(app_source, period_start, period_end)
-            if orphan_pct > 0.3:
+        # 4. Orphan shadows: bank records whose description mentions 财付通/支付宝
+        #    but have no dedup_link — means we couldn't match them to a WeChat/Alipay record.
+        for app_source, keyword in (("wechat", "财付通"), ("alipay", "支付宝")):
+            orphans = self._list_orphan_shadows(app_source, keyword, period_start, period_end)
+            if orphans:
+                sample = [
+                    f"  {o['date']} {o['amount']:>10} {o['bank']}  {o['desc']}"
+                    for o in orphans[:5]
+                ]
+                tail = (
+                    [f"  …共 {len(orphans)} 笔，运行 [bold]mz list shadows[/bold] 查看全部"]
+                    if len(orphans) > 5
+                    else [f"  共 {len(orphans)} 笔，运行 [bold]mz list shadows[/bold] 查看详情"]
+                )
                 result.append(
                     MissingAccount(
                         institution=app_source,
                         last_4=None,
-                        type=f"{app_source}_balance",
-                        evidence=[
-                            f"银行流水中有大量 {app_source} 影子记录但未匹配到对应 App 账单"
-                        ],
-                        priority="high",
+                        type=f"{app_source}_orphan",
+                        evidence=sample + tail,
+                        priority="medium",
                     )
                 )
 
-        return sorted(result, key=lambda x: (x.priority == "high", len(x.evidence)), reverse=True)
+        return sorted(result, key=lambda x: (x.priority == "high"), reverse=True)
 
-    def _orphan_shadow_pct(self, app_source: str, start: date, end: date) -> float:
-        """Fraction of bank rows with app shadow text that have no dedup link."""
-        keyword = "财付通" if app_source == "wechat" else "支付宝"
-        total = self.conn.execute(
-            """SELECT COUNT(*) FROM raw_transactions
-               WHERE source LIKE 'bank_%'
-                 AND (counterparty LIKE ? OR description LIKE ?)
-                 AND txn_time >= ? AND txn_time <= ?""",
+    def _list_orphan_shadows(
+        self,
+        app_source: str,
+        keyword: str,
+        start: date,
+        end: date,
+    ) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT r.id, r.txn_time, r.amount_cents, r.source,
+                   r.counterparty, r.description
+            FROM raw_transactions r
+            LEFT JOIN dedup_links d ON d.raw_txn_id = r.id
+            WHERE r.source LIKE 'bank_%'
+              AND (r.counterparty LIKE ? OR r.description LIKE ?)
+              AND r.txn_time >= ? AND r.txn_time <= ?
+              AND d.id IS NULL
+            ORDER BY r.txn_time
+            """,
             (f"%{keyword}%", f"%{keyword}%", start.isoformat(), end.isoformat() + "T23:59:59"),
-        ).fetchone()[0]
-        if total == 0:
-            return 0.0
-        linked = self.conn.execute(
-            """SELECT COUNT(DISTINCT r.id) FROM raw_transactions r
-               JOIN dedup_links d ON d.raw_txn_id = r.id
-               WHERE r.source LIKE 'bank_%'
-                 AND (r.counterparty LIKE ? OR r.description LIKE ?)
-                 AND r.txn_time >= ? AND r.txn_time <= ?""",
-            (f"%{keyword}%", f"%{keyword}%", start.isoformat(), end.isoformat() + "T23:59:59"),
-        ).fetchone()[0]
-        return (total - linked) / total
+        ).fetchall()
+
+        result = []
+        for row in rows:
+            amt = abs(row["amount_cents"]) / 100
+            desc = (row["counterparty"] or "") + " " + (row["description"] or "")
+            result.append({
+                "id": row["id"],
+                "date": row["txn_time"][:10],
+                "amount": f"¥{amt:,.2f}",
+                "bank": row["source"],
+                "desc": desc.strip()[:40],
+            })
+        return result
+
+    def list_all_orphan_shadows(self, start: date, end: date) -> list[dict]:
+        """Return all unmatched bank shadow records for display."""
+        result = []
+        for keyword in ("财付通", "支付宝"):
+            rows = self.conn.execute(
+                """
+                SELECT r.id, r.txn_time, r.amount_cents, r.source,
+                       r.counterparty, r.description
+                FROM raw_transactions r
+                LEFT JOIN dedup_links d ON d.raw_txn_id = r.id
+                WHERE r.source LIKE 'bank_%'
+                  AND (r.counterparty LIKE ? OR r.description LIKE ?)
+                  AND r.txn_time >= ? AND r.txn_time <= ?
+                  AND d.id IS NULL
+                ORDER BY r.txn_time
+                """,
+                (f"%{keyword}%", f"%{keyword}%", start.isoformat(), end.isoformat() + "T23:59:59"),
+            ).fetchall()
+            for row in rows:
+                desc = (row["counterparty"] or "") + " " + (row["description"] or "")
+                result.append({
+                    "id": row["id"],
+                    "date": row["txn_time"][:10],
+                    "amount_cents": row["amount_cents"],
+                    "bank_source": row["source"],
+                    "desc": desc.strip(),
+                })
+        return result
