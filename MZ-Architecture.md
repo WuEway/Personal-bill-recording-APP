@@ -12,8 +12,9 @@
 
 > 本文档面向 Claude Code 实施使用。读完即可直接编码，无需再做大的产品/架构决策。
 
-> **实施状态（2026-05-04）**：Phase 1–6 已全部完成。42 个单元/集成测试全部通过。
-> 安装：`pip install -e .`，运行：`mz --help`
+> **实施状态（2026-05-05）**：
+> - **v1 (CLI)**：Phase 1–6 全部完成，42 个单元/集成测试全通过。`pip install -e .` → `mz --help`
+> - **v3 (移动端)**：React Native + Expo 跨平台 App 全部完成，代码在 `app/` 目录，见附录 C。
 
 ---
 
@@ -1980,3 +1981,101 @@ $ mz report --month 2026-04
 ---
 
 **文档结束。** 实施过程中如发现需要调整设计，请在 commit 中标注 `[ARCH-DECISION]` 并更新本文档对应章节。
+
+---
+
+## 附录 C：v3 移动端架构（React Native + Expo）
+
+> **实施状态（2026-05-05）**：v3 已完整实现并推送至 `claude/build-accounting-app-k6shI` 分支，`app/` 目录。
+
+### C.1 架构决策
+
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| 跨平台方案 | **React Native + Expo SDK 54** | 单套代码同时支持 iOS/Android，Expo 生态成熟，无需 ejected |
+| 路由 | **Expo Router（文件路由）** | 等效 Next.js App Router，声明式，支持 deep link |
+| 本地数据库 | **expo-sqlite** | Expo 官方 SQLite binding，API 与 v1 Python 方案完全对应 |
+| 状态管理 | **Zustand** | 轻量无模版代码，适合单页状态共享 |
+| 文件读取 | **expo-document-picker + expo-file-system** | 系统文件选择器，跨平台一致 |
+| XLSX 解析 | **SheetJS (xlsx)** | 纯 JS 实现，React Native 可直接用 |
+| 语言 | **TypeScript（全量）** | 类型安全，与 v1 模型定义严格对应 |
+
+### C.2 核心差异（vs v1 CLI）
+
+| 方面 | v1 (Python CLI) | v3 (React Native App) |
+|---|---|---|
+| 运行环境 | 桌面 terminal | iOS / Android |
+| UI 范式 | `rich` 终端表格 | Expo Router 5-Tab 导航 |
+| XLSX 解析 | `openpyxl` | SheetJS (ArrayBuffer) |
+| CSV GBK | 标准库 `csv` + gbk | base64 + latin1 回退（Hermes 无 GBK） |
+| PDF 解析 | `pdfplumber` | ❌ MVP 不支持（无对等库） |
+| 哈希算法 | SHA-256 (hashlib) | djb2（Hermes 无 SubtleCrypto polyfill）|
+| 导出 | `mz report` 命令 | 系统 `Share.share()` 弹层 |
+
+### C.3 目录结构
+
+```
+app/
+├── app.json                    # Expo 配置（slug: mz-bill，scheme: mzbill）
+├── package.json
+├── app/                        # Expo Router 页面
+│   ├── _layout.tsx             # Root layout：initDb + loading 状态
+│   └── (tabs)/
+│       ├── _layout.tsx         # 5-Tab 底部导航
+│       ├── index.tsx           # 总览：MonthPicker + 收支卡片 + 类目进度条
+│       ├── import.tsx          # 导入：微信/支付宝来源卡片 + 去重 + 历史
+│       ├── transactions.tsx    # 账单：支出/收入/群聊 Tab + 入账状态切换
+│       ├── categories.tsx      # 类目：增删改 + 月度/年度预算管理
+│       └── report.tsx          # 报告：月度汇总 + Markdown/JSON 导出
+└── src/
+    ├── models/index.ts         # 全部 TypeScript 接口（对应 v1 Pydantic models）
+    ├── db/
+    │   ├── schema.ts           # SCHEMA_SQL 常量（7 张表，与 v1 完全一致）
+    │   ├── database.ts         # initDb / dbRun / dbGet / dbAll / getConfig / setConfig
+    │   └── repositories.ts    # 全部 CRUD（accounts / transactions / categories / entries…）
+    ├── services/
+    │   ├── parsers/
+    │   │   ├── wechat.ts       # parseWechatXlsx(ArrayBuffer) → RawTransactionDraft[]
+    │   │   └── alipay.ts       # parseAlipayText(text) → RawTransactionDraft[]
+    │   ├── accountResolver.ts  # 支付方式字符串 → Account
+    │   ├── transferDetector.ts # 10 条内部转账识别规则
+    │   ├── importService.ts    # pickAndImport / importFile（file picker + 解析 + 入库）
+    │   ├── inclusionManager.ts # effectiveInclusion / computeTotal / setInclusion
+    │   ├── dedupeEngine.ts     # runDedupe(start, end): Promise<DedupeStats>
+    │   └── categoryService.ts  # DEFAULT_CATEGORIES + addCategory / getAllProgress
+    ├── hooks/
+    │   └── useStore.ts         # Zustand store（selectedMonth / total / txns / refresh）
+    ├── components/
+    │   ├── Card.tsx            # 白色圆角卡片容器
+    │   ├── MonthPicker.tsx     # 月份选择器（< YYYY-MM >）
+    │   ├── ProgressBar.tsx     # 进度条（红/黄/蓝自动配色）
+    │   └── AmountText.tsx      # 金额文本（颜色 + 格式化）
+    └── utils/
+        └── format.ts           # fmtAmount / fmtAmountShort / monthRange / fileHash
+```
+
+### C.4 数据模型（与 v1 完全对应）
+
+金额全部以**整数分（cents）**存储，`direction` 字段（expense/income/transfer）与 v1 一致。四态入账状态 `inclusion`（auto/included/excluded/offset）与 v1 完全一致，总支出公式不变：
+
+```
+当月总支出 = ∑(direction=expense, inclusion≠excluded)
+           - ∑(direction=income, inclusion=offset)
+```
+
+### C.5 本地开发启动
+
+```bash
+cd app
+npm install
+npx expo start           # Expo Go 扫码即用（iOS/Android）
+npx expo run:ios         # 构建本地 iOS 包（需 Xcode）
+npx expo run:android     # 构建本地 Android 包（需 Android Studio）
+```
+
+### C.6 已知限制
+
+- 暂不支持 PDF 账单（平安、工商），需导入 CSV/XLSX 格式
+- GBK 编码用 base64→latin1 回退，极少数特殊字符可能乱码
+- 文件去重使用 djb2 哈希（非 SHA-256），理论上存在极低碰撞概率
+- 无云同步：数据仅存本机 SQLite（`expo-sqlite` 沙箱路径）
