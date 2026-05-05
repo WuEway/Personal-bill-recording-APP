@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS imported_files (
     period_start    DATE,
     period_end      DATE,
     row_count       INTEGER NOT NULL DEFAULT 0,
+    account_label   TEXT,                          -- e.g. "8223" for bank cards
     imported_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

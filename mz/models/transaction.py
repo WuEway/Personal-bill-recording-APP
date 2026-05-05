@@ -81,4 +81,5 @@ class ImportedFile(BaseModel):
     period_start: date | None = None
     period_end: date | None = None
     row_count: int = 0
+    account_label: str | None = None  # e.g. "8223" for bank cards
     imported_at: datetime | None = None

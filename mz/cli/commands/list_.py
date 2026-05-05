@@ -14,14 +14,36 @@ from mz.utils.dates import current_month, month_range
 console = Console()
 
 SOURCE_LABELS = {
-    "wechat": "WeChat",
-    "alipay": "Alipay",
-    "bank_pingan": "平安",
-    "bank_icbc": "工行",
-    "bank_ccb": "建行",
-    "bank_boc": "中行",
-    "bank_abc": "农行",
-    "bank_cmb": "招行",
+    "wechat":     "WeChat",
+    "alipay":     "Alipay",
+    "bank_pingan":"平安银行",
+    "bank_icbc":  "工商银行",
+    "bank_ccb":   "建设银行",
+    "bank_boc":   "中国银行",
+    "bank_abc":   "农业银行",
+    "bank_cmb":   "招商银行",
+    "bank_bocm":  "交通银行",
+    "bank_ceb":   "光大银行",
+    "bank_cmbc":  "民生银行",
+    "bank_spdb":  "浦发银行",
+    "bank_cib":   "兴业银行",
+}
+
+# Short English prefix used in file aliases (no Chinese)
+SOURCE_ALIAS_PREFIX = {
+    "wechat":     "wechat",
+    "alipay":     "alipay",
+    "bank_pingan":"pingan",
+    "bank_icbc":  "icbc",
+    "bank_ccb":   "ccb",
+    "bank_boc":   "boc",
+    "bank_abc":   "abc",
+    "bank_cmb":   "cmb",
+    "bank_bocm":  "bocm",
+    "bank_ceb":   "ceb",
+    "bank_cmbc":  "cmbc",
+    "bank_spdb":  "spdb",
+    "bank_cib":   "cib",
 }
 
 
@@ -139,10 +161,28 @@ def _show_group(month: str | None) -> None:
     conn.close()
 
 
+def _build_alias(f, source_counts, source_seen) -> str:
+    """
+    Build an alias for an imported file. Always ASCII (no Chinese).
+    - Bank with account_label:    'pingan_8223', 'icbc_6930'
+    - Bank without account_label: 'pingan_1', 'pingan_2'
+    - App (wechat/alipay):        'wechat', 'alipay' (or 'wechat_2' if duplicate)
+    """
+    prefix = SOURCE_ALIAS_PREFIX.get(f.source, f.source.replace("bank_", ""))
+    if f.source.startswith("bank_"):
+        if f.account_label:
+            return f"{prefix}_{f.account_label}"
+        else:
+            return f"{prefix}_{source_seen[f.source]}"
+    else:
+        return prefix if source_counts[f.source] == 1 else f"{prefix}_{source_seen[f.source]}"
+
+
 @cmd_list.command("files")
 def list_files():
-    """查看所有已导入账单文件（含编号/来源/时间段/条数）。"""
+    """查看所有已导入账单文件（含编号/别名/来源/时间段/条数）。"""
     from mz.repositories.imported_file_repo import ImportedFileRepository
+    from collections import Counter
     import os
 
     conn = get_connection()
@@ -154,17 +194,14 @@ def list_files():
         console.print("[dim]尚未导入任何账单文件[/dim]\n")
         return
 
-    # Build short aliases: single file from source → source name; multiple → source_1, source_2
-    from collections import Counter
     source_counts: Counter = Counter(f.source for f in files)
     source_seen: Counter = Counter()
 
     console.print("\n[bold]已导入账单文件[/bold]\n")
     t = make_table("ID", "别名", "来源", "账单周期", "条数", "文件")
     for f in files:
-        count = source_counts[f.source]
         source_seen[f.source] += 1
-        alias = f.source if count == 1 else f"{f.source}_{source_seen[f.source]}"
+        alias = _build_alias(f, source_counts, source_seen)
         src_label = SOURCE_LABELS.get(f.source, f.source)
         period = (
             f"{f.period_start.strftime('%Y-%m-%d')} ~ {f.period_end.strftime('%Y-%m-%d')}"
@@ -183,28 +220,23 @@ def list_files():
 
 
 def _resolve_file_arg(conn, file_arg: str) -> tuple[int | None, str]:
-    """
-    Accept either a numeric ID ("3") or an alias ("bank_pingan", "wechat_2").
-    Returns (resolved_file_id, display_label).
-    """
+    """Accept numeric ID or alias (e.g. '平安_8223', 'wechat'). Returns (file_id, label)."""
     from collections import Counter
     from mz.repositories.imported_file_repo import ImportedFileRepository
 
-    # Pure integer → treat as DB ID directly
     if file_arg.isdigit():
         fid = int(file_arg)
-        row = conn.execute("SELECT source, file_path FROM imported_files WHERE id=?", (fid,)).fetchone()
+        row = conn.execute("SELECT source FROM imported_files WHERE id=?", (fid,)).fetchone()
         label = f"文件#{fid}" + (f" ({row[0]})" if row else "")
         return fid, label
 
-    # String alias → rebuild alias→id mapping
     repo = ImportedFileRepository(conn)
     all_files = repo.list_all()
     counts: Counter = Counter(f.source for f in all_files)
     seen: Counter = Counter()
     for f in all_files:
         seen[f.source] += 1
-        alias = f.source if counts[f.source] == 1 else f"{f.source}_{seen[f.source]}"
+        alias = _build_alias(f, counts, seen)
         if alias == file_arg:
             return f.id, f"{alias} (ID {f.id})"
 

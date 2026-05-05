@@ -16,6 +16,12 @@ class ImportedFileRepository:
         ).fetchone()
         return row is not None
 
+    def get_id_by_hash(self, file_hash: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT id FROM imported_files WHERE file_hash=?", (file_hash,)
+        ).fetchone()
+        return row["id"] if row else None
+
     def create(
         self,
         source: str,
@@ -25,11 +31,13 @@ class ImportedFileRepository:
         is_encrypted: bool,
         period_start: date | None,
         period_end: date | None,
+        account_label: str | None = None,
     ) -> int:
         cur = self.conn.execute(
             """INSERT INTO imported_files
-               (source, file_path, file_hash, file_format, is_encrypted, period_start, period_end, row_count)
-               VALUES(?,?,?,?,?,?,?,0)""",
+               (source, file_path, file_hash, file_format, is_encrypted,
+                period_start, period_end, row_count, account_label)
+               VALUES(?,?,?,?,?,?,?,0,?)""",
             (
                 source,
                 file_path,
@@ -38,10 +46,17 @@ class ImportedFileRepository:
                 int(is_encrypted),
                 period_start.isoformat() if period_start else None,
                 period_end.isoformat() if period_end else None,
+                account_label,
             ),
         )
         self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
+
+    def update_account_label(self, file_id: int, label: str) -> None:
+        self.conn.execute(
+            "UPDATE imported_files SET account_label=? WHERE id=?", (label, file_id)
+        )
+        self.conn.commit()
 
     def update_row_count(self, file_id: int, count: int) -> None:
         self.conn.execute(
@@ -67,4 +82,5 @@ class ImportedFileRepository:
             period_start=date.fromisoformat(row["period_start"]) if row["period_start"] else None,
             period_end=date.fromisoformat(row["period_end"]) if row["period_end"] else None,
             row_count=row["row_count"],
+            account_label=row["account_label"] if row["account_label"] else None,
         )

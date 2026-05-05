@@ -40,9 +40,24 @@ def init_db(db_path: Path | None = None) -> None:
     try:
         conn.executescript(schema_sql)
         conn.commit()
+        # Incremental migrations (safe to run on existing DBs)
+        _migrate(conn)
         # Set DB file permissions to 0600 (owner read/write only)
         p = get_db_path()
         if p.exists():
             p.chmod(0o600)
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply additive schema migrations that are safe to re-run."""
+    migrations = [
+        "ALTER TABLE imported_files ADD COLUMN account_label TEXT",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists

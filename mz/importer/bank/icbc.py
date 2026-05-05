@@ -37,6 +37,27 @@ class IcbcPdfImporter(BaseImporter):
                 for table in tables:
                     yield from self._parse_table(table)
 
+    def extract_account_label(self, file_path: Path, file_format: str) -> str | None:
+        """Extract last-4 digits of the account/card number from the PDF header."""
+        try:
+            import pdfplumber
+            with pdfplumber.open(file_path) as pdf:
+                text = ""
+                for page in pdf.pages[:2]:
+                    text += (page.extract_text() or "")
+            for pattern in (
+                r'账号[：:\s]+[\d\s*×·-]*?(\d{4})\b',
+                r'卡号[：:\s]+[\d\s*×·-]*?(\d{4})\b',
+                r'尾号\s*[：:\s]*(\d{4})',
+                r'[*×·]{2,}\s*(\d{4})\b',
+            ):
+                m = re.search(pattern, text)
+                if m:
+                    return m.group(1)
+        except Exception:
+            pass
+        return None
+
     def detect_period(self, file_path: Path, file_format: str) -> tuple[date, date]:
         dates: list[date] = []
         for draft in self.parse(file_path, file_format):

@@ -81,13 +81,19 @@ mz report --month 2026-04
 mz list files
 ```
 
-列出所有已导入账单文件，显示编号、来源、账单周期、条数和文件名。同一来源导入多个文件时别名自动加序号（如 `bank_pingan_1`、`bank_pingan_2`）。
+列出所有已导入账单文件。别名格式为 `来源_卡号后四位`（纯英文+数字），如 `pingan_8223`、`icbc_6930`、`wechat`、`alipay`。银行账单会自动尝试从 PDF 提取卡号后四位；如未识别到，别名为 `pingan_1`、`pingan_2` 等。
+
+```
+mz import <文件> --account 8223
+```
+
+导入时手动指定卡号后四位。如果该文件已导入过，只更新卡号标签，不重复入库。适用于 PDF 未能自动识别卡号的情况。
 
 ```
 mz list raw --file <ID 或别名>
 ```
 
-按文件查看原始记录。`--file` 接受数字 ID（如 `--file 3`）或别名（如 `--file bank_pingan`）。同一来源有多份账单时别名自动加序号（如 `bank_pingan_1`）。`--file` 和 `--source` 同时指定时 `--file` 优先。
+按文件查看原始记录，接受数字 ID（`--file 3`）或别名（`--file pingan_8223`）。`--file` 优先于 `--source`。
 
 ---
 
@@ -134,7 +140,7 @@ npx expo start    # 扫码用 Expo Go 打开
 
 | 命令 | 用途 |
 |---|---|
-| `mz import <文件>` | 导入账单 |
+| `mz import <文件> [--account XXXX]` | 导入账单；`--account` 指定卡号后四位 |
 | `mz formats` | 查看支持的导入格式 |
 | `mz dedupe --month YYYY-MM` | 跨平台去重 |
 | `mz report --month YYYY-MM` | 月度报告 |

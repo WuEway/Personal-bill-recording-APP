@@ -189,6 +189,23 @@ App 必须在导入界面明确列出"支持的格式"清单，并对每种格�
 **为什么不用位置推断（positional heuristics）：**
 不同银行 PDF 的列顺序可能随版本变化；平安银行 PDF 含序号列在日期之前，位置推断曾将序号（1/2/3）误识别为金额。Header-driven 方案只要表头关键字不变，列顺序无关。
 
+### 3.4 账单文件别名（account_label）
+
+`imported_files` 表有 `account_label TEXT` 列，存储银行卡号后四位（如 `"8223"`）。
+
+**来源优先级（高→低）：**
+1. 用户通过 `mz import --account XXXX` 显式指定
+2. 由各银行 importer 的 `extract_account_label()` 自动从 PDF 首页文本提取
+3. 未能识别时为 `NULL`
+
+**`mz list files` 别名规则（纯英文+数字）：**
+- 银行文件有 account_label：`pingan_8223`、`icbc_6930`
+- 银行文件无 account_label：`pingan_1`、`pingan_2`（按导入顺序序号）
+- App 文件（唯一）：`wechat`、`alipay`
+- App 文件（重复）：`wechat_2`
+
+`mz import --account XXXX` 对已导入文件只更新 `account_label`，不重复入库。
+
 ### 3.3 安全与隐私
 
 - DB 文件权限 0600；默认在用户 home 目录下

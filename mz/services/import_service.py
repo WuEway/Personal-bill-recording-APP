@@ -25,6 +25,7 @@ class ImportResult:
     source: str = ""
     period_start: str = ""
     period_end: str = ""
+    account_label: str | None = None
 
 
 class ImportService:
@@ -43,13 +44,24 @@ class ImportService:
         password: str | None = None,
         source_hint: str | None = None,
         password_callback=None,  # callable(file_path, hint) -> str
+        account_label: str | None = None,  # user-supplied last-4 override
     ) -> list[ImportResult]:
         """
         Unpack, detect format, parse, and insert raw transactions.
         Returns one ImportResult per sub-file processed.
         """
         file_hash = sha256_of(file_path)
-        if self.file_repo.exists_by_hash(file_hash):
+        existing_id = self.file_repo.get_id_by_hash(file_hash)
+        if existing_id is not None:
+            # File already imported. If caller supplied an account_label,
+            # update it on the existing record instead of skipping silently.
+            if account_label:
+                self.file_repo.update_account_label(existing_id, account_label)
+                return [ImportResult(
+                    skipped_duplicate=True,
+                    file_id=existing_id,
+                    account_label=account_label,
+                )]
             return [ImportResult(skipped_duplicate=True)]
 
         try:
@@ -63,7 +75,9 @@ class ImportService:
 
         results = []
         for unpacked in unpacked_files:
-            result = self._process_file(unpacked, file_hash, source_hint, file_path)
+            result = self._process_file(
+                unpacked, file_hash, source_hint, file_path, account_label
+            )
             results.append(result)
             # Clean up temp files immediately
             if unpacked.is_temp:
@@ -71,7 +85,10 @@ class ImportService:
 
         return results
 
-    def _process_file(self, unpacked, file_hash, source_hint, original_path) -> ImportResult:
+    def _process_file(
+        self, unpacked, file_hash, source_hint, original_path,
+        account_label: str | None = None,
+    ) -> ImportResult:
         result = ImportResult()
         try:
             importer = find_importer(unpacked.path, unpacked.format, hint=source_hint)
@@ -87,6 +104,16 @@ class ImportService:
         except Exception:
             period = (None, None)
 
+        # Resolve account_label: user override > auto-extract from file
+        resolved_label = account_label
+        if not resolved_label and importer.SOURCE_NAME.startswith("bank_"):
+            try:
+                resolved_label = importer.extract_account_label(
+                    unpacked.path, unpacked.format
+                )
+            except Exception:
+                pass
+
         file_id = self.file_repo.create(
             source=importer.SOURCE_NAME,
             file_path=str(original_path),
@@ -95,7 +122,9 @@ class ImportService:
             is_encrypted=unpacked.was_encrypted,
             period_start=period[0],
             period_end=period[1],
+            account_label=resolved_label,
         )
+        result.account_label = resolved_label
         result.file_id = file_id
 
         for draft in importer.parse(unpacked.path, unpacked.format):

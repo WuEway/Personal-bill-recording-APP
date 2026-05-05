@@ -17,7 +17,9 @@ console = Console()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--source", "-s", default=None, help="手动指定来源 (wechat/alipay/bank_pingan/bank_icbc)")
 @click.option("--password", "-p", default=None, help="加密文件密码")
-def cmd_import(file: Path, source: str | None, password: str | None):
+@click.option("--account", "-a", default=None,
+              help="银行卡号后四位（无法自动识别时手动指定，如 --account 8223）")
+def cmd_import(file: Path, source: str | None, password: str | None, account: str | None):
     """导入账单文件（支持 .xlsx / .csv / .pdf / .zip）。"""
     conn = get_connection()
     user_name = conn.execute(
@@ -38,6 +40,7 @@ def cmd_import(file: Path, source: str | None, password: str | None):
             password=password,
             source_hint=source,
             password_callback=pwd_callback,
+            account_label=account,
         )
     except PasswordRequired as e:
         error(f"文件加密，需要密码：{e.hint}")
@@ -49,10 +52,15 @@ def cmd_import(file: Path, source: str | None, password: str | None):
 
     for res in results:
         if res.skipped_duplicate:
-            warn(f"该文件已导入过，跳过。")
+            if res.account_label:
+                success(f"文件已存在，已更新账号标签：{res.account_label}")
+            else:
+                warn("该文件已导入过，跳过。")
             continue
 
         success(f"来源: {res.source}")
+        if res.account_label:
+            info(f"账号后四位: {res.account_label}")
         info(f"解析行数: {res.rows_parsed}")
         info(f"新增入库: {res.rows_inserted}")
         if res.rows_duplicate:
