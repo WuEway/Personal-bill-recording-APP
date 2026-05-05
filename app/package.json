@@ -1,0 +1,37 @@
+{
+  "name": "mz-bill",
+  "version": "2.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "eslint src app --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
+    "@react-navigation/bottom-tabs": "^7.15.11",
+    "@react-navigation/native": "^7.2.2",
+    "@react-navigation/stack": "^7.8.11",
+    "expo": "~54.0.33",
+    "expo-document-picker": "^55.0.13",
+    "expo-file-system": "^55.0.17",
+    "expo-router": "^55.0.13",
+    "expo-sqlite": "^55.0.15",
+    "expo-status-bar": "~3.0.9",
+    "papaparse": "^5.5.3",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "^5.7.0",
+    "react-native-screens": "^4.24.0",
+    "xlsx": "^0.18.5",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.3.15",
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}

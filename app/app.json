@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "MZ记账",
+    "slug": "mz-bill",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "scheme": "mzbill",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a73e8"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mz.bill"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a73e8"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.mz.bill"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-document-picker",
+        { "iCloudContainerEnvironment": "Production" }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
