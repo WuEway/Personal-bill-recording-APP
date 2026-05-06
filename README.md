@@ -140,6 +140,20 @@ mz entry add 旅游 1200 "机票" --date 2026-04-15 --link <交易ID>  # 关联�
 
 ---
 
+## 重置与删除
+
+```
+mz db reset                    # 清空全部数据（二次确认，不可撤销）
+mz db reset --force            # 跳过确认直接清空
+
+mz delete-file pingan_8223     # 删除指定账单文件及其全部原始/规范交易记录
+mz delete-file 3               # 按 ID 删除（ID 来自 mz list files）
+```
+
+删除单个文件后，重新导入正确文件并运行 `mz dedupe --month <月份>` 即可重新计算。
+
+---
+
 ## 其他命令
 
 ```
@@ -187,3 +201,5 @@ npx expo start    # 扫码用 Expo Go 打开
 | `mz entry add <类目> <金额> <说明>` | `--date YYYY-MM-DD` `--link <ID>` | 手动记录类目支出 |
 | `mz explain <ID>` | — | 查看去重详情 |
 | `mz db stats` | — | 数据库统计 |
+| `mz db reset` | `--force` | 清空数据库（危险，不可撤销） |
+| `mz delete-file <ID或别名>` | `--force` | 删除指定账单文件及其全部记录 |

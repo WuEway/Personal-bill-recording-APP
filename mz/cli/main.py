@@ -19,6 +19,7 @@ from mz.cli.commands.report import cmd_report
 from mz.cli.commands.coverage import cmd_coverage
 from mz.cli.commands.explain import cmd_explain
 from mz.cli.commands.db import cmd_db
+from mz.cli.commands.delete_file import cmd_delete_file
 
 
 @click.group()
@@ -45,3 +46,4 @@ cli.add_command(cmd_report)
 cli.add_command(cmd_coverage)
 cli.add_command(cmd_explain)
 cli.add_command(cmd_db)
+cli.add_command(cmd_delete_file)
